@@ -17,4 +17,7 @@
 
 -   ~~generate predictions, gapfill, export to parquet~~ 
 
-- Add template for fitting models WRT daily min/mean/max
+- ~~Add template for fitting models WRT daily min/mean/max~~
+-   (almost) working version of daily t28m gapfill
+-   find error causing monthly spikes
+-   apply daily model structure to the other climate vars
