@@ -2,6 +2,10 @@
 
 -   as of 2023-01-26
 
+## Usage Notes: 
+-   Install apache arrow R package
+
+
 ## To do:
 
 -   ~~finish GEE exports~~
