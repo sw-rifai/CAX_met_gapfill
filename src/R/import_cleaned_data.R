@@ -57,7 +57,7 @@ gpm <- gpm[,.(date, precipitationCal,site)] %>%
   mutate(time = date-hours(3)) %>% 
   rename(precip = precipitationCal) %>% # mm/hr 
   mutate(hour = hour(time),
-         day = day(time),
+         day = lubridate::day(time),
          month = month(time),
          year = year(time))
 tz(gpm$time) <- "America/Belem" # fix timezone
