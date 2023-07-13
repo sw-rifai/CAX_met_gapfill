@@ -32,7 +32,7 @@ e5 <- e5[site=='cax_south'] %>%
          v = v_component_of_wind_10m) %>% 
   mutate(time = date - hours(3)) %>% # date is UTC, time is local time
   mutate(hour = hour(time),
-         day = day(time),
+         day = lubridate::day(time),
          month = month(time),
          year = year(time)) %>% 
   mutate(t2m = t2m-273.15,
