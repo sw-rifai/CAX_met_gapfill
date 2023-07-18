@@ -69,11 +69,6 @@ valid <- fsetdiff(tmp,test)[is.na(t28m)==F] # questionable if validation frame i
 
 rm(tmp); gc();
 
-## check no infinite vals
-testthat::expect_false(
-  all(train$t28m %>% is.infinite())
-)
-
 
 # SPINUP H2O CLUSTER ==============================================
 h2o.init(
@@ -97,6 +92,11 @@ tmp_dmax <- full_dat %>% select(-c("hour","year","time")) %>%
   .[,`:=`(stat = "max")]
 
 # t28m =========================================================================
+
+## check no infinite vals
+testthat::expect_false(
+  all(train$t28m %>% is.infinite())
+)
 
 m_t28m <- h2o.automl(x=covar_names,
                      y='t28m',
@@ -186,6 +186,11 @@ ggsave(filename = "figures/monthlySpike_pred_t28m.png")
 
 # rh28m ========================
 
+## check no infinite vals
+testthat::expect_false(
+  all(train$rh28m %>% is.infinite())
+)
+
 m_rh28m <- h2o.automl(x=covar_names,
                      y='rh28m',
                      training_frame = as.h2o(train[is.na(rh28m)==F]), 
@@ -262,6 +267,11 @@ out %>%
 ggsave(filename = "figures/time_series_pred_rh28m.png")
 
 # vpd28m ========================
+
+## check no infinite vals
+testthat::expect_false(
+  all(train$vpd28m %>% is.infinite())
+)
 
 m_vpd28m <- h2o.automl(x=covar_names,
                        y='vpd28m',
@@ -341,6 +351,12 @@ ggsave(filename = "figures/time_series_pred_vpd28m.png")
 
 # rad_global ========================
 
+## check no infinite vals
+testthat::expect_false(
+  all(train$rad_global %>% is.infinite())
+)
+
+
 m_rad_global <- h2o.automl(x=covar_names,
                       y='rad_global',
                       training_frame = as.h2o(train[is.na(rad_global)==F]), 
@@ -419,6 +435,11 @@ ggsave(filename = "figures/time_series_pred_rad_global.png")
 
 # precip ========================
 
+## check no infinite vals
+testthat::expect_false(
+  all(train$precip %>% is.infinite())
+)
+
 m_precip <- h2o.automl(x=covar_names,
                            y='precip',
                            training_frame = as.h2o(train[is.na(precip)==F]), 
@@ -445,6 +466,13 @@ pred_precip <- h2o.predict(m_precip,
 
 out <- cbind(pdat,pred_precip) %>% 
   select(date,stat,pred_precip,precip)
+
+
+out %>% arrange(ymd(out$date))
+tmp_dmin %>%arrange(ymd(tmp_dmin$date))
+full_dat%>%arrange(ymd(full_dat$date))
+cdat%>%arrange(ymd(cdat$date))
+ddat%>%arrange(ymd(ddat$date))
 
 ## write to disc
 out %>% 
@@ -495,6 +523,11 @@ out %>%
 ggsave(filename = "figures/time_series_pred_precip.png")
 
 # vv ========================
+
+## check no infinite vals
+testthat::expect_false(
+  all(train$vv %>% is.infinite())
+)
 
 m_vv <- h2o.automl(x=covar_names,
                        y='vv',
@@ -572,6 +605,11 @@ out %>%
 ggsave(filename = "figures/time_series_pred_vv.png")
 
 # vv_max ========================
+
+## check no infinite vals
+testthat::expect_false(
+  all(train$vv_max %>% is.infinite())
+)
 
 m_vv_max <- h2o.automl(x=covar_names,
                    y='vv_max',
