@@ -333,7 +333,7 @@ ggsave(filename = "figures/figure_pred_vs_obs_daily_vpd28m.png",
 
 # Predicted time series plot
 out %>% 
-  ggplot(aes(date,pred_rh28m,color=stat))+
+  ggplot(aes(date,pred_vpd28m,color=stat))+
   geom_line()+
   theme_linedraw()
 ggsave(filename = "figures/time_series_pred_vpd28m.png")
