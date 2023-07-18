@@ -52,8 +52,6 @@ ddat <- ddat[,`:=`(stat = factor(stat,
                  ordered = F))] # h2o thrown an error when ordered
 
 
-
-
 # Splice data for mod fitting ==============================================
 set.seed(3)
 ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
@@ -88,6 +86,16 @@ covar_names <- c(names(train)[str_detect(names(train),"e5")],
                  "month","stat")
 
 
+tmp_dmin <- full_dat %>% select(-c("hour","year","time")) %>% 
+  .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
+  .[,`:=`(stat = "min")]
+tmp_dmean <- full_dat %>% select(-c("hour","year","time")) %>% 
+  .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
+  .[,`:=`(stat = "mean")]
+tmp_dmax <- full_dat %>% select(-c("hour","year","time")) %>% 
+  .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
+  .[,`:=`(stat = "max")]
+
 # t28m ========================
 
 m_t28m <- h2o.automl(x=covar_names,
@@ -103,17 +111,8 @@ perf_t28m <- h2o.performance(m_t28m@leader,
 perf_t28m@metrics$r2
 
 
-
 # Generate full predicted time series ============================
-tmp_dmin <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "min")]
-tmp_dmean <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "mean")]
-tmp_dmax <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "max")]
+
 pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
   select(all_of(covar_names), t28m, date) %>% 
   .[,`:=`(month = factor(month))]
@@ -175,5 +174,86 @@ out[date>=ymd("2012-01-01")][date<=ymd("2012-12-31")] %>%
   geom_line()+
   theme_linedraw()
 ggsave(filename = "figures/monthlySpike_pred_t28m.png")
+
+
+# rh28m ========================
+
+m_rh28m <- h2o.automl(x=covar_names,
+                     y='rh28m',
+                     training_frame = as.h2o(train[is.na(rh28m)==F]), 
+                     # validation_frame = test_rh28m,
+                     include_algos = c("GBM"),
+                     max_models = n_models,
+                     # max_runtime_secs = 1500,
+                     seed=3)
+perf_rh28m <- h2o.performance(m_rh28m@leader,
+                             newdata=as.h2o(test[is.na(rh28m)==F]))
+perf_rh28m@metrics$r2
+
+
+
+# Generate full predicted time series ============================
+
+pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
+  select(all_of(covar_names), rh28m, date) %>% 
+  .[,`:=`(month = factor(month))]
+
+pred_rh28m <- h2o.predict(m_rh28m, 
+                         newdata=as.h2o(pdat)) %>% 
+  as.data.table() %>% 
+  set_names("pred_rh28m")
+
+out <- cbind(pdat,pred_rh28m) %>% 
+  select(date,stat,pred_rh28m,rh28m)
+
+## write to disc
+out %>% 
+  # fwrite(., file=paste0("outputs/cax_met-pred-obs_rh28m_2001_2022_daily_proc",Sys.Date(),".csv"))
+  fwrite(., file=paste0("outputs/cax_met-pred-obs_rh28m_2001_2022_daily_proc.csv"))
+
+
+# Plot evaluation ================================
+## just from train and validation
+pdat <- h2o.predict(m_rh28m, newdata=as.h2o(rbind(train,valid))) %>% 
+  as.data.table() %>% 
+  set_names("pred_rh28m")
+
+cbind(rbind(train,valid),pdat) %>% 
+  # filter(year_cat == 2011) %>% 
+  ggplot(aes(pred_rh28m,rh28m, color=stat))+
+  geom_point(color='black',size=1,shape=1)+
+  geom_point(alpha=0.25,size=0.5)+
+  geom_abline(col='grey30',lwd=1.1)+
+  geom_smooth(se=F,
+              aes(group=stat),
+              method='lm',
+              color='black',
+              lwd=1.1)+
+  geom_smooth(se=F,
+              method='lm',
+              lwd=0.5)+
+  labs(x="predicted T28 m",
+       y="tower T28 m",
+       color="daily T28 m (°C)")+
+  scale_color_viridis_d(option='H')+
+  coord_equal()+
+  facet_wrap(~ year_cat,ncol = 7)+
+  theme_linedraw()
+ggsave(filename = "figures/figure_pred_vs_obs_daily_rh28m.png",
+       width=25,
+       height=12,
+       units='cm',
+       dpi=350, 
+       scale = 1.25)
+
+
+## problematic monthly spike in rh28m 
+## Unclear. Something could be wrong with reducing the hourly to daily
+## tmax_spike is low, and tmin_spike is high... 
+out[date>=ymd("2012-01-01")][date<=ymd("2012-12-31")] %>% 
+  ggplot(aes(date,pred_rh28m,color=stat))+
+  geom_line()+
+  theme_linedraw()
+ggsave(filename = "figures/monthlySpike_pred_rh28m.png")
 
 
