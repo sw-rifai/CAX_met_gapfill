@@ -104,8 +104,6 @@ perf_t28m@metrics$r2
 
 
 
-
-
 # Generate full predicted time series ============================
 tmp_dmin <- full_dat %>% select(-c("hour","year","time")) %>% 
   .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
@@ -130,7 +128,7 @@ out <- cbind(pdat,pred_t28m) %>%
 
 ## write to disc
 out %>% 
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_proc",Sys.Date(),".csv"))
+  fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc",Sys.Date(),".csv"))
 
 
 # Plot evaluation ================================
