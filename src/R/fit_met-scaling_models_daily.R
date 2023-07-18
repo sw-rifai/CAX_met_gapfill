@@ -29,7 +29,8 @@ source("src/R/import_cleaned_data.R")
 
 ## only working on CAX south for now
 full_dat <- dat[site=="cax_south"] %>% 
-       select(-site, -ddate)
+       select(-site, -ddate) %>%
+  mutate(month = month(date))    # seems like some months were not truly representing the date month, so I redefine month here
 
 ## cdat: 24 obs per day
 vec_cdat <- full_dat[,.(nobs = sum(is.na(t28m)==F)),by=date][nobs==24]$date
@@ -466,13 +467,6 @@ pred_precip <- h2o.predict(m_precip,
 
 out <- cbind(pdat,pred_precip) %>% 
   select(date,stat,pred_precip,precip)
-
-
-out %>% arrange(ymd(out$date))
-tmp_dmin %>%arrange(ymd(tmp_dmin$date))
-full_dat%>%arrange(ymd(full_dat$date))
-cdat%>%arrange(ymd(cdat$date))
-ddat%>%arrange(ymd(ddat$date))
 
 ## write to disc
 out %>% 
