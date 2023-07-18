@@ -159,12 +159,14 @@ pdat2 <- cbind(dat %>% select(time,date,year,month,hour,
 pdat2 %>% 
   arrow::write_parquet(., 
                        sink = 
-    paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc",Sys.Date(),".parquet"),
+    # paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc",Sys.Date(),".parquet"),
+    paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc.parquet"),
     compression = 'snappy')
 
-pdat2 %>% 
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc",Sys.Date(),".csv"))
 
+pdat2 %>% 
+  # fwrite(., file=paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc",Sys.Date(),".csv"))
+  fwrite(., file=paste0("outputs/cax_met-pred-obs_2001_2022_hourly_proc.csv"))
 
 # SCRAP __________________________________________________________________
 # pdat2$pred_windspeed %>% hist(1000)

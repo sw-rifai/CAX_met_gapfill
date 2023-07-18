@@ -128,7 +128,8 @@ out <- cbind(pdat,pred_t28m) %>%
 
 ## write to disc
 out %>% 
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc",Sys.Date(),".csv"))
+  # fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc",Sys.Date(),".csv"))
+fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc.csv"))
 
 
 # Plot evaluation ================================
