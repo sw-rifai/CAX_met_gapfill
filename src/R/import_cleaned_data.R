@@ -22,7 +22,7 @@ e5 <- lapply(list.files("data/CAX_met_GPM/","ERA5-Land-hourly___", full.names = 
   rbindlist()
 e5 <- e5[,-c("system:index", ".geo")]
 e5 <- e5[site=='cax_south'] %>% 
-  rename(t2m = temperature_2m,
+  dplyr::rename(t2m = temperature_2m,
          d2m = dewpoint_temperature_2m,
          ps = surface_pressure,
          ssrd = surface_solar_radiation_downwards,
@@ -30,8 +30,9 @@ e5 <- e5[site=='cax_south'] %>%
          tot_evap = total_evaporation_hourly,
          u = u_component_of_wind_10m,
          v = v_component_of_wind_10m) %>% 
-  mutate(time = date - hours(3)) %>% # date is UTC, time is local time
-  mutate(hour = lubridate::hour(time),
+  mutate(date = as_datetime(date),
+         time = as_datetime(date - hours(3))) %>% # date is UTC, time is local time
+  mutate(hour = hour(time),
          day = lubridate::day(time),
          month = month(time),
          year = year(time)) %>% 
@@ -156,9 +157,11 @@ dat <- merge(dat,
 
 # Add soil  observations ====================================================
 
+vwc_wp_a_2009_2022 <- read.csv("data/soil_obs/cax_a_soil_obs_2009_2022_hourly.csv", header = T) %>%
+  mutate(time = as_datetime(date)) %>%
+  select(time, everything(), -date)
 
-vwc_wp_a_2009_2022 <- read.csv("data/soil_obs/cax_a_soil_obs_2009_2022_hourly.csv", header = T)
+tz(vwc_wp_a_2009_2022) <- "America/Belem"
 
-
-
-
+dat <- merge(dat, vwc_wp_a_2009_2022, 
+                  by = "time", all = T)
