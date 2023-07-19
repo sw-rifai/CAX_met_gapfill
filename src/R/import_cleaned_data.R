@@ -31,7 +31,7 @@ e5 <- e5[site=='cax_south'] %>%
          u = u_component_of_wind_10m,
          v = v_component_of_wind_10m) %>% 
   mutate(time = date - hours(3)) %>% # date is UTC, time is local time
-  mutate(hour = hour(time),
+  mutate(hour = lubridate::hour(time),
          day = lubridate::day(time),
          month = month(time),
          year = year(time)) %>% 
@@ -152,3 +152,13 @@ dat <- merge(dat,
              dat[,.(e5_t2m_u = mean(e5_t2m)), by=.(month,hour)], 
              by=c("month","hour")) %>% 
   .[,`:=`(e5_t2m_anom = e5_t2m-e5_t2m_u)]
+
+
+# Add soil  observations ====================================================
+
+
+vwc_wp_a_2009_2022 <- read.csv("data/soil_obs/cax_a_soil_obs_2009_2022_hourly.csv", header = T)
+
+
+
+
