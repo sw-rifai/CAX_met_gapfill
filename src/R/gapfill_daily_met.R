@@ -39,7 +39,7 @@ gapFillData <- function(data = st_pred.df, variablesToGapFill = "precip_mean"){
 
 # Load and unify daily predicted met data =============================
 
-pred.files <- list.files("outputs/", pattern = c("daily", ".csv"), full.names = T)
+pred.files <- list.files("outputs/", pattern = c("daily", "pred", ".csv"), full.names = T)
 pred.list <- lapply(pred.files, 
                         read.csv)
 
@@ -75,9 +75,9 @@ fwrite(st_pred.df, file=paste0("products/cax_met-pred-obs_2001_2022_daily.csv"))
 
 # Gapfill missing data of variables with predicted values =============================
 
-mean_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max"), c("_mean"))
-min_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max"), c("_min"))
-max_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max"), c("_max"))
+mean_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max", "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa"), c("_mean"))
+min_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max", "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa"), c("_min"))
+max_met.variables <- paste0(c("precip", "rad_global", "rh28m", "t28m", "vpd28m", "vv", "vv_max", "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa"), c("_max"))
 
 met.variables <- c(mean_met.variables, max_met.variables, min_met.variables)
 

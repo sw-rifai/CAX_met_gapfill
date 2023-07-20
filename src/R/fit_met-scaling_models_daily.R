@@ -20,13 +20,236 @@
 ## to do:
 #     vpd28m (from t28m + rh28m)
 
+remove(list = ls())
+
 pacman::p_load(h2o, data.table, tidyverse, lubridate, feather, units,
                scico,bigleaf, mgcv, gratia, cols4all)
 
-# User options =============================
-frac_train <- 0.9 # fraction of data used for training 
-# n_covars <- 20 # number of covariates used for training
-n_models <- 10 # number models fit in autoML
+### Functions ####
+
+# Function to perform and save predictions for a given variable present in the data
+predictMet <- function(cdat = NULL,
+                       variable = NULL, 
+                       covar_names = NULL, 
+                       frac_train = 0.9, # fraction of data used for training 
+                       # n_covars <- 20, # number of covariates used for training
+                       n_models = 10, # number models fit in autoML
+                       outputFile = NULL,
+                       performanceFile = NULL,
+                       evaluationPlotFile = NULL, 
+                       timeSeriesPlotFile = NULL){
+  
+  if(is.null(variable) | is.null(covar_names) | is.null(covar_names)){
+    stop("assign variable (character 1)")
+  }
+  
+  if(is.null(covar_names)){
+    stop("assign covar_names (character n)")
+  }
+  
+  if(is.null(cdat)){
+    stop("assign ddat (data.table)")
+  }
+  
+  # results list
+  results <- list()
+  
+  # design name for predicted variable
+  pred_variable <- paste0("pred_", variable)
+  
+  ## Data preparation ####
+  
+  # Summarize to daily min/mean/max
+  dmin <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "min")]
+  dmean <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "mean")]
+  dmax <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "max")]
+  
+  ## stack
+  ddat <- rbind(dmin,dmean,dmax)
+  ddat <- ddat[,`:=`(stat = factor(stat,
+                                   levels = c("min","mean","max"),
+                                   ordered = F))] # h2o thrown an error when ordered
+  
+  # Recode Inf with NAs
+  ddat[sapply(ddat, is.infinite)] <- NA
+  
+  # 
+  tmp_dmin <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "min")]
+  tmp_dmean <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "mean")]
+  tmp_dmax <- cdat %>% select(-c("hour","year","time")) %>% 
+    .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
+    .[,`:=`(stat = "max")]
+  
+  # Splice data for mod fitting ###
+  set.seed(3)
+  ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
+    .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
+    .[,`:=`(month = factor(month))]
+  vec_ym <- ddat$ym %>% unique %>% sort
+  vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
+  vec_test <- vec_ym[!vec_ym %in% vec_train]
+  train <- ddat[ym %in% vec_train][is.na(variable)==F]
+  tmp <- fsetdiff(ddat, train)[is.na(variable)==F]
+  test <- tmp[sample(.N, floor(.N*0.5))][is.na(variable)==F]
+  valid <- fsetdiff(tmp,test)[is.na(variable)==F] # questionable if validation frame is needed
+  train <- ddat[ym %in% vec_train][is.na(variable)==F]
+  tmp <- fsetdiff(ddat, train)[is.na(variable)==F]
+  test <- tmp[sample(.N, floor(.N*0.5))][is.na(variable)==F]
+  valid <- fsetdiff(tmp,test)[is.na(variable)==F] # questionable if validation frame is needed
+  
+  rm(tmp); gc();
+  
+  # check no infinite vals
+  testthat::expect_false(
+    any(as.vector(train[, ..variable])[[1]] %>% is.infinite())
+  )
+  
+  # Model
+  
+  m <- h2o.automl(x=covar_names,
+                       y=variable,
+                       training_frame = as.h2o(train[is.na(variable)==F]), 
+                       include_algos = c("GBM"),
+                       max_models = n_models,
+                       # max_runtime_secs = 1500,
+                       seed=3)
+  
+  # Model performance
+  
+  performance <- h2o.performance(m@leader,
+                               newdata=as.h2o(test[is.na(variable)==F]))
+  
+  results[[paste0("performance_", variable)]] <- data.frame("variable" = variable,
+                                                            "predictors" = paste0(covar_names, collapse = ", "),
+                                                            "Nobs" = performance@metrics[["nobs"]],
+                                                            "R2" = performance@metrics[["r2"]],
+                                                            "MSE" = performance@metrics[["MSE"]],
+                                                            "RMSE" = performance@metrics[["RMSE"]],
+                                                            "mean_residual_deviance" = performance@metrics[["mean_residual_deviance"]],
+                                                            "mae" = performance@metrics[["mae"]],
+                                                            "rmsle" = performance@metrics[["rmsle"]]
+  )
+  
+  if(!is.null(performanceFile)){
+    fwrite(results[[paste0("performance_", variable)]], file = performanceFile) 
+  }
+  
+  # Generate full predicted time series
+  
+  pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
+    select(all_of(covar_names), all_of(variable), date) %>% 
+    .[,`:=`(month = factor(month))]
+  
+  pred_t28m <- h2o.predict(m, 
+                           newdata=as.h2o(pdat)) %>% 
+    as.data.table() %>% 
+    set_names(pred_variable)
+  
+  out <- cbind(pdat,pred_t28m) %>% 
+    select(date, stat, all_of(c(pred_variable, variable)))
+  
+  results[[paste0("prediction_", variable)]] <- out
+  
+  ## write to disc
+  if(!is.null(outputFile)){
+    fwrite(out, file = outputFile)
+  }
+  
+  # Plot evaluation
+  
+  ## just from train and validation
+  pdat <- h2o.predict(m, newdata=as.h2o(rbind(train,valid))) %>% 
+    as.data.table() %>% 
+    set_names(pred_variable)
+  
+  plot.data <- as.data.frame(cbind(rbind(train,valid),pdat))
+  
+  results[[paste0("evaluation_plot_", variable)]] <-  plot.data %>%
+    ggplot(aes(plot.data[, pred_variable], plot.data[, variable], color=stat))+
+    geom_point(color='black',size=1,shape=1)+
+    geom_point(alpha=0.25,size=0.5)+
+    geom_abline(col='grey30',lwd=1.1)+
+    geom_smooth(se=F,
+                aes(group=stat),
+                method='lm',
+                color='black',
+                lwd=1.1)+
+    geom_smooth(se=F,
+                method='lm',
+                lwd=0.5)+
+    labs(x= paste0("predicted ", variable),
+         y= paste0("observed ", variable),
+         color= variable) +
+    scale_color_viridis_d(option='H')+
+    coord_equal()+
+    facet_wrap(~ year_cat,ncol = 7) +
+    theme_linedraw()
+  
+  plot(results[[paste0("evaluation_plot_", variable)]] )
+  
+  if(!is.null(evaluationPlotFile)){
+    ggsave(filename = evaluationPlotFile,
+           width=25,
+           height=12,
+           units='cm',
+           dpi=350, 
+           scale = 1.25)
+  }
+  
+  # Predicted time series plot
+  
+  tsPlot.data <- as.data.frame(out)
+  results[[paste0("predicted_time_series_plot_", variable)]]  <- ggplot(tsPlot.data, aes(x = date, 
+                                                                              y = tsPlot.data[, pred_variable], 
+                                                                              color = stat)) +
+    geom_line(alpha = 0.8) +
+    labs(y= paste0("Predicted ", variable)) +
+    theme_linedraw()
+  
+  plot(results[[paste0("evaluation_plot_", variable)]])
+  
+  if(!is.null(timeSeriesPlotFile)){
+    ggsave(filename = timeSeriesPlotFile)
+  }
+  
+  return(results)
+}
+
+# Function to perform gap filling
+gapFillData <- function(data = st_pred.df, variablesToGapFill = "precip_mean"){
+  
+  data <- as.data.frame(data)
+
+    for(var in variablesToGapFill){
+    pred_var <- paste0("pred_", var)
+    
+    # imput missing values with predicted values
+    data[is.na(data[, var]), var] <- data[is.na(data[, var]), pred_var]
+    
+    # Delete pred variable
+    data[, pred_var] <- NULL
+  }
+  return(data)
+}
+
+
+## Zoom in if needed
+# out[date>=ymd("2012-01-01")][date<=ymd("2012-12-31")] %>% 
+#   ggplot(aes(date,pred_t28m,color=stat))+
+#   geom_line()+
+#   theme_linedraw()
+# ggsave(filename = "figures/monthlySpike_pred_t28m.png")
+
 
 # Import cleaned met obs and ERA5 & GPM data ===============================
 source("src/R/import_cleaned_data.R")
@@ -36,989 +259,137 @@ full_dat <- dat[site=="cax_south"] %>%
        select(-site, -ddate) %>%
   mutate(month = month(date))    # seems like some months were not truly representing the date month, so I redefine month here
 
-## cdat: 24 obs per day
-vec_cdat <- full_dat[,.(nobs = sum(is.na(t28m)==F)),by=date][nobs==24]$date
-cdat <- full_dat[date %in% vec_cdat]
-
-
-# Summarize to daily min/mean/max ==========================================
-dmin <- cdat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "min")]
-dmean <- cdat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "mean")]
-dmax <- cdat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "max")]
-
-## stack
-ddat <- rbind(dmin,dmean,dmax)
-ddat <- ddat[,`:=`(stat = factor(stat,
-                 levels = c("min","mean","max"),
-                 ordered = F))] # h2o thrown an error when ordered
-
-# Recode Inf with NAs
-ddat[sapply(ddat, is.infinite)] <- NA
-
-
-
+## cdat: 24 obs per day (I do not think this step is needed and it may give some problems as it constrain other variables to t28m data availability...)
+# vec_cdat <- full_dat[,.(nobs = sum(is.na(t28m)==F)),by=date][nobs==24]$date
+# cdat <- full_dat[date %in% vec_cdat]
+cdat <- full_dat # (I do not think the previous two lines are needed and it may give some problems as it constrain other variables to t28m data availability...)
 
 # SPINUP H2O CLUSTER ==============================================
 h2o.init(
   max_mem_size = "128g" # change mem size as needed
 ) 
 
-covar_names <- c(names(ddat)[str_detect(names(ddat),"e5")],
-                 names(ddat)[str_detect(names(ddat),"g_")],
-                 names(ddat)[str_detect(names(ddat),"c_p")],
+### variables to predict
+
+variables <- c("t28m", "rh28m", "vpd28m", "rad_global", "precip", "vv", "vv_max", "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa")
+
+# round 1 (using remote sensed variables to predict) =========================================================================
+
+covar_names <- c(names(cdat)[str_detect(names(cdat),"e5")],
+                 names(cdat)[str_detect(names(cdat),"g_")],
+                 names(cdat)[str_detect(names(cdat),"c_p")],
                  "month","stat")
 
-tmp_dmin <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "min")]
-tmp_dmean <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "mean")]
-tmp_dmax <- full_dat %>% select(-c("hour","year","time")) %>% 
-  .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
-  .[,`:=`(stat = "max")]
+gapFilled.list <- list()
+
+for(variable in variables){
+  print(variable)
+  ## Predictions
+  
+  variable_prediction <- predictMet(cdat = cdat,
+                                variable = variable,
+                                covar_names = covar_names,
+                                performanceFile = paste0("outputs/performance_", variable, "_2001_2022_daily.csv"), 
+                                outputFile = paste0("outputs/cax_met-pred-obs_", variable, "_2001_2022_daily_proc.csv"), 
+                                evaluationPlotFile = paste0("figures/", variable, "_daily_pred_vs_obs.png"), 
+                                timeSeriesPlotFile = paste0("figures/", variable, "_daily_pred_time_series.png"))
+
+  pred.df <- variable_prediction[[paste0("prediction_", variable)]]
+  
+  ## Gap filling
+  
+  # from long to wide (stat)
+  statistics <- unique(pred.df$stat)
+  st_pred.list <- list()
+  for(st in statistics){
+    
+    st_pred.df <- pred.df %>%
+      filter(stat == st) %>%
+      select(-stat)
+    
+    names(st_pred.df)[-1] <- paste0(names(st_pred.df)[-1], "_", st)
+    
+    st_pred.list[[st]] <- st_pred.df
+  }
+  
+  st_pred.df <- st_pred.list %>%     
+    reduce(merge, by = "date")
+  
+
+  met.variables <- paste0(variable, "_", statistics)
+  
+  # gap fill and store
+  gapFilled.list[[variable]] <- gapFillData(data = st_pred.df, variablesToGapFill = met.variables)
+}
+
+gapFilled.df <- gapFilled.list %>%     
+  reduce(merge, by = "date")
+fwrite(gapFilled.df, file=paste0("products/cax_met-gap_filled_2001_2022_daily.csv"))
+
+# round 2 (using previously predicted variables) TO DO ===============================
+
+gapFilled2.list <- list()
+
+for(variable in variables){
+  print(variable)
+  
+  covar_names <- variables[!variables %in% variable]
+  
+  ## Predictions
+  
+  variable_prediction <- predictMet(cdat = cdat,
+                                    variable = variable,
+                                    covar_names = covar_names,
+                                    performanceFile = paste0("outputs/performance_", variable, "_2001_2022_daily.csv"), 
+                                    outputFile = paste0("outputs/cax_met-pred-obs_", variable, "_2001_2022_daily_proc.csv"), 
+                                    evaluationPlotFile = paste0("figures/", variable, "_daily_pred_vs_obs.png"), 
+                                    timeSeriesPlotFile = paste0("figures/", variable, "_daily_pred_time_series.png"))
+  
+  pred.df <- variable_prediction[[paste0("prediction_", variable)]]
+  
+  ## Gap filling
+  
+  # from long to wide (stat)
+  statistics <- unique(pred.df$stat)
+  st_pred.list <- list()
+  for(st in statistics){
+    
+    st_pred.df <- pred.df %>%
+      filter(stat == st) %>%
+      select(-stat)
+    
+    names(st_pred.df)[-1] <- paste0(names(st_pred.df)[-1], "_", st)
+    
+    st_pred.list[[st]] <- st_pred.df
+  }
+  
+  st_pred.df <- st_pred.list %>%     
+    reduce(merge, by = "date")
+  
+  
+  met.variables <- paste0(variable, "_", statistics)
+  
+  # gap fill and store
+  gapFilled2.list[[variable]] <- gapFillData(data = st_pred.df, variablesToGapFill = met.variables)
+}
+
+gapFilled2.df <- gapFilled2.list %>%     
+  reduce(merge, by = "date")
+fwrite(gapFilled2.df, file=paste0("products/cax_met-gap_filled_2001_2022_daily_round2.csv"))
+
+# all variables performance (TO DO)
+
+# all variables performance (TO DO)
+
+performance.files <- list.files("outputs/", 
+                                pattern = c("performance", ".csv"), 
+                                full.names = T)
 
-# t28m =========================================================================
 
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(t28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(t28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(t28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(t28m)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(t28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(t28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(t28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(t28m)==F] # questionable if validation frame is needed
 
+performances.df <- lapply(performance.files, 
+                           read.csv) %>% 
+  list_rbind()
+fwrite(performances.df, file=paste0("products/predictive_performances.csv"))
 
-rm(tmp); gc();
-
-
-## check no infinite vals
-testthat::expect_false(
-  any(train$t28m %>% is.infinite())
-)
-
-m_t28m <- h2o.automl(x=covar_names,
-                     y='t28m',
-                     training_frame = as.h2o(train[is.na(t28m)==F]), 
-                     # validation_frame = test_t28m,
-                     include_algos = c("GBM"),
-                     max_models = n_models,
-                     # max_runtime_secs = 1500,
-                     seed=3)
-perf_t28m <- h2o.performance(m_t28m@leader,
-                              newdata=as.h2o(test[is.na(t28m)==F]))
-perf_t28m@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), t28m, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_t28m <- h2o.predict(m_t28m, 
-                    newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_t28m")
-
-out <- cbind(pdat,pred_t28m) %>% 
-  select(date,stat,pred_t28m,t28m)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc",Sys.Date(),".csv"))
-fwrite(., file=paste0("outputs/cax_met-pred-obs_t28m_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation
-
-## just from train and validation
-pdat <- h2o.predict(m_t28m, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_t28m")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_t28m,t28m, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted T28 m",
-       y="tower T28 m",
-       color="daily T28 m (°C)")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_t28m.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_t28m,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_t28m.png")
-
-
-## problematic monthly spike in t28m 
-## Unclear. Something could be wrong with reducing the hourly to daily
-## tmax_spike is low, and tmin_spike is high... 
-out[date>=ymd("2012-01-01")][date<=ymd("2012-12-31")] %>% 
-  ggplot(aes(date,pred_t28m,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/monthlySpike_pred_t28m.png")
-
-# rh28m ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(rh28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(rh28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(rh28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(rh28m)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(rh28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(rh28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(rh28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(rh28m)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  any(train$rh28m %>% is.infinite())
-)
-
-m_rh28m <- h2o.automl(x=covar_names,
-                     y='rh28m',
-                     training_frame = as.h2o(train[is.na(rh28m)==F]), 
-                     # validation_frame = test_rh28m,
-                     include_algos = c("GBM"),
-                     max_models = n_models,
-                     # max_runtime_secs = 1500,
-                     seed=3)
-perf_rh28m <- h2o.performance(m_rh28m@leader,
-                             newdata=as.h2o(test[is.na(rh28m)==F]))
-perf_rh28m@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), rh28m, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_rh28m <- h2o.predict(m_rh28m, 
-                         newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_rh28m")
-
-out <- cbind(pdat,pred_rh28m) %>% 
-  select(date,stat,pred_rh28m,rh28m)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_rh28m_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_rh28m_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_rh28m, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_rh28m")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_rh28m,rh28m, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted RH 28 m",
-       y="tower RH 28 m",
-       color="daily RH 28 m (%)")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_rh28m.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_rh28m,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_rh28m.png")
-
-# vpd28m ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(vpd28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vpd28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vpd28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(vpd28m)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(vpd28m)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vpd28m)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vpd28m)==F]
-valid <- fsetdiff(tmp,test)[is.na(vpd28m)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  any(train$vpd28m %>% is.infinite())
-)
-## check no infinite vals
-testthat::expect_false(
-  all(train$vpd28m %>% is.infinite())
-)
-
-m_vpd28m <- h2o.automl(x=covar_names,
-                       y='vpd28m',
-                       training_frame = as.h2o(train[is.na(vpd28m)==F]), 
-                       # validation_frame = test_vpd28m,
-                       include_algos = c("GBM"),
-                       max_models = n_models,
-                       # max_runtime_secs = 1500,
-                       seed=3)
-perf_vpd28m <- h2o.performance(m_vpd28m@leader,
-                               newdata=as.h2o(test[is.na(vpd28m)==F]))
-perf_vpd28m@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), vpd28m, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_vpd28m <- h2o.predict(m_vpd28m, 
-                           newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_vpd28m")
-
-out <- cbind(pdat,pred_vpd28m) %>% 
-  select(date,stat,pred_vpd28m,vpd28m)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_vpd28m_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_vpd28m_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_vpd28m, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_vpd28m")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_vpd28m,vpd28m, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted VPD 28 m",
-       y="tower VPD 28 m",
-       color="daily VPD 28 m")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_vpd28m.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_vpd28m,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_vpd28m.png")
-
-
-# rad_global ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(rad_global)==F]
-tmp <- fsetdiff(ddat, train)[is.na(rad_global)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(rad_global)==F]
-valid <- fsetdiff(tmp,test)[is.na(rad_global)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(rad_global)==F]
-tmp <- fsetdiff(ddat, train)[is.na(rad_global)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(rad_global)==F]
-valid <- fsetdiff(tmp,test)[is.na(rad_global)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$rad_global %>% is.infinite())
-)
-
-
-m_rad_global <- h2o.automl(x=covar_names,
-                      y='rad_global',
-                      training_frame = as.h2o(train[is.na(rad_global)==F]), 
-                      # validation_frame = test_rad_global,
-                      include_algos = c("GBM"),
-                      max_models = n_models,
-                      # max_runtime_secs = 1500,
-                      seed=3)
-perf_rad_global <- h2o.performance(m_rad_global@leader,
-                              newdata=as.h2o(test[is.na(rad_global)==F]))
-perf_rad_global@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), rad_global, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_rad_global <- h2o.predict(m_rad_global, 
-                          newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_rad_global")
-
-out <- cbind(pdat,pred_rad_global) %>% 
-  select(date,stat,pred_rad_global,rad_global)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_rad_global_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_rad_global_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_rad_global, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_rad_global")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_rad_global,rad_global, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted global radiation",
-       y="tower global radiation",
-       color="daily global radiation (W/m2)")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_rad_global.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_rad_global,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_rad_global.png")
-
-
-# precip ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(precip)==F]
-tmp <- fsetdiff(ddat, train)[is.na(precip)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(precip)==F]
-valid <- fsetdiff(tmp,test)[is.na(precip)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(precip)==F]
-tmp <- fsetdiff(ddat, train)[is.na(precip)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(precip)==F]
-valid <- fsetdiff(tmp,test)[is.na(precip)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$precip %>% is.infinite())
-)
-
-m_precip <- h2o.automl(x=covar_names,
-                           y='precip',
-                           training_frame = as.h2o(train[is.na(precip)==F]), 
-                           # validation_frame = test_precip,
-                           include_algos = c("GBM"),
-                           max_models = n_models,
-                           # max_runtime_secs = 1500,
-                           seed=3)
-perf_precip <- h2o.performance(m_precip@leader,
-                                   newdata=as.h2o(test[is.na(precip)==F]))
-perf_precip@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), precip, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_precip <- h2o.predict(m_precip, 
-                               newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_precip")
-
-out <- cbind(pdat,pred_precip) %>% 
-  select(date,stat,pred_precip,precip)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_precip_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_precip_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_precip, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_precip")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_precip,precip, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted precipitation",
-       y="tower T28 precipitation",
-       color="daily precipitation (mm)")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_precip.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_precip,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_precip.png")
-
-# vv ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(vv)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vv)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vv)==F]
-valid <- fsetdiff(tmp,test)[is.na(vv)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(vv)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vv)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vv)==F]
-valid <- fsetdiff(tmp,test)[is.na(vv)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$vv %>% is.infinite())
-)
-
-m_vv <- h2o.automl(x=covar_names,
-                       y='vv',
-                       training_frame = as.h2o(train[is.na(vv)==F]), 
-                       # validation_frame = test_vv,
-                       include_algos = c("GBM"),
-                       max_models = n_models,
-                       # max_runtime_secs = 1500,
-                       seed=3)
-perf_vv <- h2o.performance(m_vv@leader,
-                               newdata=as.h2o(test[is.na(vv)==F]))
-perf_vv@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), vv, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_vv <- h2o.predict(m_vv, 
-                           newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_vv")
-
-out <- cbind(pdat,pred_vv) %>% 
-  select(date,stat,pred_vv,vv)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_vv_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_vv_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_vv, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_vv")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_vv,vv, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted vv m",
-       y="tower vv",
-       color="daily vv")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_vv.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_vv,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_vv.png")
-
-# vv_max ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(vv_max)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vv_max)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vv_max)==F]
-valid <- fsetdiff(tmp,test)[is.na(vv_max)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(vv_max)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vv_max)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vv_max)==F]
-valid <- fsetdiff(tmp,test)[is.na(vv_max)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$vv_max %>% is.infinite())
-)
-
-
-m_vv_max <- h2o.automl(x=covar_names,
-                   y='vv_max',
-                   training_frame = as.h2o(train[is.na(vv_max)==F]), 
-                   # validation_frame = test_vv_max,
-                   include_algos = c("GBM"),
-                   max_models = n_models,
-                   # max_runtime_secs = 1500,
-                   seed=3)
-perf_vv_max <- h2o.performance(m_vv_max@leader,
-                           newdata=as.h2o(test[is.na(vv_max)==F]))
-perf_vv_max@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), vv_max, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_vv_max <- h2o.predict(m_vv_max, 
-                       newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_vv_max")
-
-out <- cbind(pdat,pred_vv_max) %>% 
-  select(date,stat,pred_vv_max,vv_max)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_vv_max_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_vv_max_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_vv_max, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_vv_max")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_vv_max,vv_max, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted vv_max",
-       y="tower vv_max",
-       color="daily vv_max")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_vv_max.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_vv_max,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_vv_max.png")
-
-
-# soil vwc 250m ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(vwc_250cm)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vwc_250cm)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vwc_250cm)==F]
-valid <- fsetdiff(tmp,test)[is.na(vwc_250cm)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(vwc_250cm)==F]
-tmp <- fsetdiff(ddat, train)[is.na(vwc_250cm)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(vwc_250cm)==F]
-valid <- fsetdiff(tmp,test)[is.na(vwc_250cm)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$vwc_250cm %>% is.infinite())
-)
-
-m_vwc_250cm <- h2o.automl(x=covar_names,
-                       y='vwc_250cm',
-                       training_frame = as.h2o(train[is.na(vwc_250cm)==F]), 
-                       # validation_frame = test_vwc_250cm,
-                       include_algos = c("GBM"),
-                       max_models = n_models,
-                       # max_runtime_secs = 1500,
-                       seed=3)
-perf_vwc_250cm <- h2o.performance(m_vwc_250cm@leader,
-                               newdata=as.h2o(test[is.na(vwc_250cm)==F]))
-perf_vwc_250cm@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), vwc_250cm, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_vwc_250cm <- h2o.predict(m_vwc_250cm, 
-                           newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_vwc_250cm")
-
-out <- cbind(pdat,pred_vwc_250cm) %>% 
-  select(date,stat,pred_vwc_250cm,vwc_250cm)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_vwc_250cm_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_vwc_250cm_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_vwc_250cm, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_vwc_250cm")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_vwc_250cm,vwc_250cm, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted vwc_250cm",
-       y="tower vwc_250cm",
-       color="daily vwc_250cm")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_vwc_250cm.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_vwc_250cm,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_vwc_250cm.png")
-
-
-# TO DO: soil WP 250m ========================
-
-# Splice data for mod fitting ###
-set.seed(3)
-ddat[,`:=`(ym = paste0(year(date),"_",month(date)))] %>% 
-  .[,`:=`(year_cat = year(date) %>% as.factor())] %>% 
-  .[,`:=`(month = factor(month))]
-vec_ym <- ddat$ym %>% unique %>% sort
-vec_train <- sample(vec_ym, floor(length(vec_ym)*frac_train)) # high fraction for training
-vec_test <- vec_ym[!vec_ym %in% vec_train]
-train <- ddat[ym %in% vec_train][is.na(SWP_100cm_Avg)==F]
-tmp <- fsetdiff(ddat, train)[is.na(SWP_100cm_Avg)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(SWP_100cm_Avg)==F]
-valid <- fsetdiff(tmp,test)[is.na(SWP_100cm_Avg)==F] # questionable if validation frame is needed
-train <- ddat[ym %in% vec_train][is.na(SWP_100cm_Avg)==F]
-tmp <- fsetdiff(ddat, train)[is.na(SWP_100cm_Avg)==F]
-test <- tmp[sample(.N, floor(.N*0.5))][is.na(SWP_100cm_Avg)==F]
-valid <- fsetdiff(tmp,test)[is.na(SWP_100cm_Avg)==F] # questionable if validation frame is needed
-
-
-rm(tmp); gc();
-
-## check no infinite vals
-testthat::expect_false(
-  all(train$SWP_100cm_Avg %>% is.infinite())
-)
-
-m_SWP_100cm_Avg <- h2o.automl(x=covar_names,
-                          y='SWP_100cm_Avg',
-                          training_frame = as.h2o(train[is.na(SWP_100cm_Avg)==F]), 
-                          # validation_frame = test_SWP_100cm_Avg,
-                          include_algos = c("GBM"),
-                          max_models = n_models,
-                          # max_runtime_secs = 1500,
-                          seed=3)
-perf_SWP_100cm_Avg <- h2o.performance(m_SWP_100cm_Avg@leader,
-                                  newdata=as.h2o(test[is.na(SWP_100cm_Avg)==F]))
-perf_SWP_100cm_Avg@metrics$r2
-
-
-# Generate full predicted time series
-
-pdat <- rbind(tmp_dmin,tmp_dmean,tmp_dmax) %>% 
-  select(all_of(covar_names), SWP_100cm_Avg, date) %>% 
-  .[,`:=`(month = factor(month))]
-
-pred_SWP_100cm_Avg <- h2o.predict(m_SWP_100cm_Avg, 
-                              newdata=as.h2o(pdat)) %>% 
-  as.data.table() %>% 
-  set_names("pred_SWP_100cm_Avg")
-
-out <- cbind(pdat,pred_SWP_100cm_Avg) %>% 
-  select(date,stat,pred_SWP_100cm_Avg,SWP_100cm_Avg)
-
-## write to disc
-out %>% 
-  # fwrite(., file=paste0("outputs/cax_met-pred-obs_SWP_100cm_Avg_2001_2022_daily_proc",Sys.Date(),".csv"))
-  fwrite(., file=paste0("outputs/cax_met-pred-obs_SWP_100cm_Avg_2001_2022_daily_proc.csv"))
-
-
-# Plot evaluation 
-
-## just from train and validation
-pdat <- h2o.predict(m_SWP_100cm_Avg, newdata=as.h2o(rbind(train,valid))) %>% 
-  as.data.table() %>% 
-  set_names("pred_SWP_100cm_Avg")
-
-cbind(rbind(train,valid),pdat) %>% 
-  # filter(year_cat == 2011) %>% 
-  ggplot(aes(pred_SWP_100cm_Avg,SWP_100cm_Avg, color=stat))+
-  geom_point(color='black',size=1,shape=1)+
-  geom_point(alpha=0.25,size=0.5)+
-  geom_abline(col='grey30',lwd=1.1)+
-  geom_smooth(se=F,
-              aes(group=stat),
-              method='lm',
-              color='black',
-              lwd=1.1)+
-  geom_smooth(se=F,
-              method='lm',
-              lwd=0.5)+
-  labs(x="predicted SWP_100cm_Avg",
-       y="tower SWP_100cm_Avg",
-       color="daily SWP_100cm_Avg")+
-  scale_color_viridis_d(option='H')+
-  coord_equal()+
-  facet_wrap(~ year_cat,ncol = 7)+
-  theme_linedraw()
-ggsave(filename = "figures/figure_pred_vs_obs_daily_SWP_100cm_Avg.png",
-       width=25,
-       height=12,
-       units='cm',
-       dpi=350, 
-       scale = 1.25)
-
-# Predicted time series plot
-out %>% 
-  ggplot(aes(date,pred_SWP_100cm_Avg,color=stat))+
-  geom_line()+
-  theme_linedraw()
-ggsave(filename = "figures/time_series_pred_SWP_100cm_Avg.png")
+pred.df

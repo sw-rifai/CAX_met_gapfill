@@ -157,7 +157,7 @@ dat <- merge(dat,
 
 # Add soil  observations ====================================================
 
-vwc_wp_a_2009_2022 <- read.csv("data/soil_obs/cax_a_soil_obs_2009_2022_hourly.csv", header = T) %>%
+vwc_wp_a_2009_2022 <- read.csv("data/soil_obs/cax_b_soil_obs_2009_2023_hourly.csv", header = T) %>%
   mutate(time = as_datetime(date)) %>%
   select(time, everything(), -date)
 
