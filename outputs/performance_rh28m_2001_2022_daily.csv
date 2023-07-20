@@ -1,0 +1,2 @@
+variable,predictors,Nobs,R2,MSE,RMSE,mean_residual_deviance,mae,rmsle
+rh28m,"e5_d2m, e5_ps, e5_ssrd, e5_strd, e5_t2m, e5_tot_evap, e5_total_precipitation, e5_u, e5_v, e5_ws, e5_esat, e5_vpd, e5_tot_p24h, e5_t2m_u, e5_t2m_anom, g_p, g_p3h_sum, g_p6h_sum, g_p12h_sum, g_p24h_sum, g_p48h_sum, g_p120h_sum, c_p24h, c_p48h, c_p120h, month, stat",996,0.86380414493358,27.1596290010844,5.21149009411746,27.1596290010844,3.99063898063137,0.0691022926754893

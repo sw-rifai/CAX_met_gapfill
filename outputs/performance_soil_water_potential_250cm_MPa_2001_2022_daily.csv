@@ -1,0 +1,2 @@
+variable,predictors,Nobs,R2,MSE,RMSE,mean_residual_deviance,mae,rmsle
+soil_water_potential_250cm_MPa,"e5_d2m, e5_ps, e5_ssrd, e5_strd, e5_t2m, e5_tot_evap, e5_total_precipitation, e5_u, e5_v, e5_ws, e5_esat, e5_vpd, e5_tot_p24h, e5_t2m_u, e5_t2m_anom, g_p, g_p3h_sum, g_p6h_sum, g_p12h_sum, g_p24h_sum, g_p48h_sum, g_p120h_sum, c_p24h, c_p48h, c_p120h, month, stat",307,-0.720769086117061,0.476194656009874,0.69006858790259,0.476194656009874,0.553282526437265,NaN
