@@ -139,6 +139,15 @@ obs <- obs %>%
 ### A lot of ~0 VPD observations. Some decisions need to be made on what
 ### to do with these. I am going to filter for VPD > 0.
 
+obs <- obs %>%
+  rename(temperature_28m_C = t28m, relative_humidity_28m_perc = rh28m, radiation_global_W_m2 = rad_global, precipitation_mm = precip,
+         temperature_2m_C = t2m, relative_humidity_2m_perc = rh2m, temperature_16m_C = t16m, relative_humidity_16m_perc = rh16m,
+         temperature_42m_C = t42m, relative_humidity_42m_perc = rh42m, evapotranspiration_42m = et42m, solar_radiation_W_m2 = rso,
+         radiation_global_total_W_m2 = rad_glob_tot, radiation_net_W_m2 = rad_net, wind_speed_m_s = vv, wind_speed_maximum_m_s = vv_max,
+         wind_direction_degrees = direction, vapor_pressure_16m_mbar = vp16m, vapor_pressure_28m_mbar = vp28m, vapor_pressure_2m_mbar = vp2m,
+         vapor_pressure_42m_mbar = vp242m, vapor_pressure_deficit_mbar = vpd28m)
+
+## Rename variables to make them more self explanatory and add units
 
 ## merge obs with era5/gpm/chirps
 names(e5)
