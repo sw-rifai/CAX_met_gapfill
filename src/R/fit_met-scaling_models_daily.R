@@ -58,17 +58,17 @@ predictMet <- function(cdat = NULL,
   pred_variable <- paste0("pred_", variable)
   
   ## Data preparation ####
-  
-  # Summarize to daily min/mean/max
-  dmin <- cdat %>% select(-c("hour","year","time")) %>% 
-    .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
-    .[,`:=`(stat = "min")]
-  dmean <- cdat %>% select(-c("hour","year","time")) %>% 
-    .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
-    .[,`:=`(stat = "mean")]
-  dmax <- cdat %>% select(-c("hour","year","time")) %>% 
-    .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
-    .[,`:=`(stat = "max")]
+
+    # Summarize to daily min/mean/max
+    dmin <- cdat %>% select(-c("hour","year","time")) %>% 
+      .[, lapply(.SD, min, na.rm=T), by=.(date,month)] %>% 
+      .[,`:=`(stat = "min")]
+    dmean <- cdat %>% select(-c("hour","year","time")) %>% 
+      .[, lapply(.SD, mean, na.rm=T), by=.(date,month)] %>% 
+      .[,`:=`(stat = "mean")]
+    dmax <- cdat %>% select(-c("hour","year","time")) %>% 
+      .[, lapply(.SD, max, na.rm=T), by=.(date,month)] %>% 
+      .[,`:=`(stat = "max")]
   
   ## stack
   ddat <- rbind(dmin,dmean,dmax)
@@ -270,8 +270,10 @@ h2o.init(
 ) 
 
 ### variables to predict
-
-variables <- c("t28m", "rh28m", "vpd28m", "rad_global", "precip", "vv", "vv_max", "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa")
+names(cdat)
+variables <- c("temperature_28m_C", "relative_humidity_28m_perc", "vapor_pressure_deficit_28m_mbar", "precipitation_mm", 
+               "radiation_global_W_m2", "wind_speed_m_s", "wind_speed_maximum_m_s", 
+               "soil_volumetric_water_content_250cm", "soil_water_potential_250cm_MPa")
 
 # round 1 (using remote sensed variables to predict) =========================================================================
 
@@ -324,26 +326,40 @@ for(variable in variables){
 
 gapFilled.df <- gapFilled.list %>%     
   reduce(merge, by = "date")
-fwrite(gapFilled.df, file=paste0("products/cax_met-gap_filled_2001_2022_daily.csv"))
+fwrite(gapFilled.df, file= "products/cax_met-gap_filled_2001_2022_daily.csv")
 
-# round 2 (using previously predicted variables) TO DO ===============================
+# round 2 (using previously predicted variables) ===============================
+
+gapFilled.df <- read_csv("products/cax_met-gap_filled_2001_2022_daily.csv")
 
 gapFilled2.list <- list()
-
 for(variable in variables){
   print(variable)
   
   covar_names <- variables[!variables %in% variable]
+  covar_names_st <- c(paste0(covar_names, "_min"),
+                      paste0(covar_names, "_mean"),
+                      paste0(covar_names, "_max"))
+
+  cdat2 <- cdat %>%
+    select(-all_of(covar_names))
+
+  cdat2 <- merge(cdat2,
+                 gapFilled.df[, c("date", covar_names_st)],
+                 by = "date",
+                 all.x = T)
+
+  covar_names_st <- c(covar_names_st, "month","stat")
   
   ## Predictions
   
-  variable_prediction <- predictMet(cdat = cdat,
+  variable_prediction <- predictMet(cdat = cdat2,
                                     variable = variable,
-                                    covar_names = covar_names,
-                                    performanceFile = paste0("outputs/performance_", variable, "_2001_2022_daily.csv"), 
-                                    outputFile = paste0("outputs/cax_met-pred-obs_", variable, "_2001_2022_daily_proc.csv"), 
-                                    evaluationPlotFile = paste0("figures/", variable, "_daily_pred_vs_obs.png"), 
-                                    timeSeriesPlotFile = paste0("figures/", variable, "_daily_pred_time_series.png"))
+                                    covar_names = covar_names_st,
+                                    performanceFile = paste0("outputs/performance_", variable, "_2001_2022_daily_round2.csv"), 
+                                    outputFile = paste0("outputs/cax_met-pred-obs_", variable, "_2001_2022_daily_proc_round2.csv"), 
+                                    evaluationPlotFile = paste0("figures/", variable, "_daily_pred_vs_obs_round2.png"), 
+                                    timeSeriesPlotFile = paste0("figures/", variable, "_daily_pred_time_series_round2.png"))
   
   pred.df <- variable_prediction[[paste0("prediction_", variable)]]
   
@@ -377,9 +393,8 @@ gapFilled2.df <- gapFilled2.list %>%
   reduce(merge, by = "date")
 fwrite(gapFilled2.df, file=paste0("products/cax_met-gap_filled_2001_2022_daily_round2.csv"))
 
-# all variables performance (TO DO)
 
-# all variables performance (TO DO)
+# Predictive pperformance ===============================
 
 performance.files <- list.files("outputs/", 
                                 pattern = c("performance", ".csv"), 
@@ -391,5 +406,3 @@ performances.df <- lapply(performance.files,
                            read.csv) %>% 
   list_rbind()
 fwrite(performances.df, file=paste0("products/predictive_performances.csv"))
-
-pred.df
